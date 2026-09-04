@@ -1,14 +1,19 @@
 name: Oracle Cloud Instance Auto-Retry
 
 on:
-  workflow_dispatch: # Manual-aa Run button click panna
+  workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *' # Every 30 mins automatically re-checks
+    - cron: '0 */4 * * *' # Every 4 hours cleanly re-runs
+
+# Ensures only 1 script runs at a time (No overlap / No rate limits)
+concurrency:
+  group: oracle-retry
+  cancel-in-progress: true
 
 jobs:
   launch-instance:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # Runs up to 5.5 hours continuously
+    timeout-minutes: 350
 
     steps:
       - name: Checkout Code
@@ -37,9 +42,9 @@ jobs:
           cat << 'EOF' > launch.py
           import os
           import time
+          import sys
           import oci
 
-          # Setup OCI Configuration
           key_path = "/tmp/oci_api_key.pem"
           with open(key_path, "w") as f:
             f.write(os.environ["OCI_KEY_CONTENT"].strip())
@@ -55,11 +60,10 @@ jobs:
           oci.config.validate_config(config)
           compute_client = oci.core.ComputeClient(config)
 
-          # Instance Launch Details (2 OCPU & 12 GB RAM - Always Free)
           launch_details = oci.core.models.LaunchInstanceDetails(
               compartment_id=os.environ["OCI_TENANCY"],
               availability_domain=os.environ["OCI_AD_NAME"],
-              display_name="AJCarvio",
+              display_name="AJCarvio-Live",
               shape="VM.Standard.A1.Flex",
               shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
                   ocpus=2.0,
@@ -77,34 +81,34 @@ jobs:
               is_pv_encryption_in_transit_enabled=True
           )
 
-          print("==================================================")
-          print("🚀 Starting Oracle Instance Auto-Retry Loop...")
-          print("Target: 2 OCPUs, 12 GB RAM with Old Boot Volume")
-          print("==================================================")
+          print("==================================================", flush=True)
+          print("🚀 Oracle Auto-Retry Active: Target 2 OCPUs, 12 GB RAM", flush=True)
+          print("==================================================", flush=True)
 
           attempt = 1
           while True:
               try:
-                  print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Attempt #{attempt}: Requesting instance creation...")
+                  timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+                  print(f"[{timestamp}] Attempt #{attempt}: Checking capacity in Mumbai AD-1...", flush=True)
                   response = compute_client.launch_instance(launch_details)
                   
                   if response.status == 200:
                       instance_id = response.data.id
-                      print("\n🎉 ===============================================")
-                      print("🎉 SUCCESS! INSTANCE CREATED SUCCESSFULLY!")
-                      print(f"🎉 Instance ID: {instance_id}")
-                      print("🎉 ===============================================\n")
-                      break
+                      print("\n🎉 ===============================================", flush=True)
+                      print("🎉 SUCCESS! INSTANCE CREATED SUCCESSFULLY!", flush=True)
+                      print(f"🎉 Instance ID: {instance_id}", flush=True)
+                      print("🎉 ===============================================\n", flush=True)
+                      sys.exit(0)
               except oci.exceptions.ServiceError as e:
                   if "Out of host capacity" in e.message or "OutOfCapacity" in e.code or e.status == 500:
-                      print(f"⚠️ Capacity unavailable (Out of capacity). Retrying in 45s...")
+                      print(f"⚠️ Out of host capacity. Retrying in 45s...", flush=True)
                   else:
-                      print(f"❌ Oracle API Error [{e.code} - {e.status}]: {e.message}")
+                      print(f"❌ Oracle API Error [{e.code} - {e.status}]: {e.message}", flush=True)
               except Exception as err:
-                  print(f"❌ Unexpected error: {err}")
+                  print(f"❌ Error: {err}", flush=True)
               
               attempt += 1
               time.sleep(45)
 
           EOF
-          python launch.py
+          python -u launch.py
